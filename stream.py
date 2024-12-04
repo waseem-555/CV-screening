@@ -90,7 +90,6 @@ if uploaded_files:
         # Display top 3 matching CVs and their similarity scores
         for i, (cv_name, score) in enumerate(top_3_cvs):
             st.subheader(f"{i+1}. {cv_name} (Score: {score:.4f})")
-            st.text(cv_texts[cv_name][:1000])  # Display first 1000 characters of the CV content
             
             # Convert PDF to image and display it
             pdf_path = os.path.join(upload_dir, cv_name)
