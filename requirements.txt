@@ -7,3 +7,4 @@ Pillow==9.5.0
 huggingface_hub==0.14.0
 altair==4.2.0
 cython==3.0.0  # Latest Cython version to avoid the 'nogil' warning
+tokenizers==0.13.3  # Explicitly include tokenizers with pre-built wheels to avoid Rust compiler
