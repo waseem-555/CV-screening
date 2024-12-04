@@ -1,102 +1,88 @@
-import os
-import fitz  # PyMuPDF
-import numpy as np
 import streamlit as st
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from huggingface_hub import hf_hub_download
-from PIL import Image
-import io
+import os
+import fitz  # PyMuPDF for PDF processing
+from sentence_transformers import SentenceTransformer, util
+import tempfile
+import shutil
 
-# Initialize the SentenceTransformer model
+# Load model for embeddings
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Function to extract text from a PDF file
+# Create directory to store uploaded PDFs if it doesn't exist
+upload_dir = 'uploaded_cvs'
+if not os.path.exists(upload_dir):
+    os.makedirs(upload_dir)
+
+# Function to extract text from PDF
 def extract_text_from_pdf(pdf_path):
+    doc = fitz.open(pdf_path)
     text = ""
-    try:
-        with fitz.open(pdf_path) as pdf:
-            for page in pdf:
-                text += page.get_text()
-    except Exception as e:
-        print(f"Error reading {pdf_path}: {e}")
+    for page in doc:
+        text += page.get_text()
     return text
 
-# Function to load PDFs from the directory and compute embeddings
-def load_cvs_and_embeddings(cv_dir):
-    cv_files = [os.path.join(cv_dir, file) for file in os.listdir(cv_dir) if file.endswith('.pdf')]
-    cv_texts = []
-    cv_filenames = []
+# Function to process uploaded PDFs and save them to the dataset
+def process_uploaded_files(uploaded_files):
+    for uploaded_file in uploaded_files:
+        # Save each uploaded file in the 'uploaded_cvs' directory
+        pdf_path = os.path.join(upload_dir, uploaded_file.name)
+        with open(pdf_path, 'wb') as f:
+            f.write(uploaded_file.getbuffer())
+        st.write(f"Uploaded: {uploaded_file.name}")
     
-    for file in cv_files:
-        text = extract_text_from_pdf(file)
-        if text.strip():  # Skip if text extraction fails
-            cv_texts.append(text)
-            cv_filenames.append(file)
-        else:
-            print(f"Warning: No text extracted from {file}. Skipping...")
+    # Extract text from each PDF and store the text for later screening
+    cv_texts = {}
+    for uploaded_file in uploaded_files:
+        pdf_path = os.path.join(upload_dir, uploaded_file.name)
+        text = extract_text_from_pdf(pdf_path)
+        cv_texts[uploaded_file.name] = text
     
-    cv_embeddings = model.encode(cv_texts, show_progress_bar=True)
-    return cv_filenames, cv_embeddings
+    return cv_texts
 
-# Function to find top matching CVs
-def find_top_matches(user_query, cv_filenames, cv_embeddings, top_n=3):
-    user_embedding = model.encode([user_query])
-    similarities = cosine_similarity(user_embedding, cv_embeddings)[0]
-    top_indices = similarities.argsort()[-top_n:][::-1]
+# Function to perform CV screening based on user query
+def screen_cvs(query, cv_texts):
+    # Create embeddings for the user query
+    query_embedding = model.encode(query, convert_to_tensor=True)
     
-    results = []
-    for idx in top_indices:
-        results.append((cv_filenames[idx], similarities[idx]))
+    # Compute embeddings for each CV and find the top 3 most similar
+    scores = {}
+    for cv_name, cv_text in cv_texts.items():
+        cv_embedding = model.encode(cv_text, convert_to_tensor=True)
+        score = util.pytorch_cos_sim(query_embedding, cv_embedding)[0][0].item()
+        scores[cv_name] = score
     
-    return results
+    # Sort CVs by similarity score and select top 3
+    sorted_scores = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    top_3_cvs = sorted_scores[:3]
+    
+    return top_3_cvs
 
-# Function to convert a PDF page to an image using PyMuPDF
-def pdf_to_image(pdf_path, page_number=0):
-    try:
-        with fitz.open(pdf_path) as pdf:
-            page = pdf.load_page(page_number)  # Get the specified page
-            pix = page.get_pixmap()  # Convert the page to a pixmap (image)
-            img = Image.open(io.BytesIO(pix.tobytes()))  # Convert pixmap to an image object
-            return img
-    except Exception as e:
-        print(f"Error converting PDF {pdf_path} to image: {e}")
-        return None
+# Streamlit UI
+st.title('CV Screening App')
 
-# Streamlit interface
-def main():
-    st.title("CV Screening Application")
+# Step 1: Upload CVs (placed in the sidebar)
+st.sidebar.header('Upload CVs to the Dataset')
+uploaded_files = st.sidebar.file_uploader("Upload CVs (PDF format)", accept_multiple_files=True, type="pdf")
 
-    # Upload CVs from the folder or any other mechanism you prefer
-    cv_dir = 'CVs'
-    st.sidebar.header("Instructions")
-    st.sidebar.write("Upload your PDFs in the 'cv_files' directory.")
-    
-    # Load CVs and embeddings
-    st.sidebar.button("Load CVs")
-    st.sidebar.text("Loading CVs, please wait...")
-    cv_filenames, cv_embeddings = load_cvs_and_embeddings(cv_dir)
-    st.sidebar.text(f"Loaded {len(cv_filenames)} CVs.")
-    
-    # Input box for user query
-    user_query = st.text_input("Enter your search criteria for CV matching:")
-    
-    if user_query:
-        st.write(f"**Searching for**: {user_query}")
-        
-        st.write("### Top 3 Matching CVs:")
-        matches = find_top_matches(user_query, cv_filenames, cv_embeddings)
-        
-        # Display top 3 matches and their PDF previews
-        for i, (filename, score) in enumerate(matches, start=1):
-            st.write(f"{i}. {filename} (Similarity: {score:.4f})")
-            
-            # Show the preview of the first page of the matched CV
-            pdf_image = pdf_to_image(filename)
-            if pdf_image:
-                st.image(pdf_image, caption=f"Preview of {os.path.basename(filename)}", use_column_width=True)
-            else:
-                st.write(f"Failed to load preview for {os.path.basename(filename)}.")
+if uploaded_files:
+    # Process uploaded files
+    cv_texts = process_uploaded_files(uploaded_files)
 
-if __name__ == "__main__":
-    main()
+    # Step 2: Input query for CV screening
+    st.header('Enter Screening Query')
+    query = st.text_area("Enter your query or job description to match CVs:")
+
+    if query:
+        # Step 3: Screen the uploaded CVs
+        st.header('Top 3 Matching CVs')
+        top_3_cvs = screen_cvs(query, cv_texts)
+
+        # Display top 3 matching CVs and their similarity scores
+        for i, (cv_name, score) in enumerate(top_3_cvs):
+            st.subheader(f"{i+1}. {cv_name} (Score: {score:.4f})")
+            st.text(cv_texts[cv_name][:1000])  # Display first 1000 characters of the CV content
+            st.markdown(f"[Download CV](file://{os.path.abspath(os.path.join(upload_dir, cv_name))})")  # Link to download CV
+
+else:
+    st.sidebar.info('Please upload some CVs to proceed with screening.')
+
